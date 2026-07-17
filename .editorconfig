@@ -1,0 +1,6 @@
+root = true
+
+[windows/**/*.ps1]
+charset = utf-8-bom
+indent_style = space
+indent_size = 2

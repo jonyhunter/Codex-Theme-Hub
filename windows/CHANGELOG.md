@@ -1,5 +1,15 @@
 # Windows Changelog
 
+## Unreleased
+
+### 修复
+
+- Windows PowerShell 脚本统一使用 UTF-8 BOM，避免 5.1 在中文系统代码页下把中文主题与托盘文本错误解码为语法错误。
+- 原子文件替换改用同目录临时备份路径，同时兼容 Windows PowerShell 5.1/.NET Framework 与 PowerShell 7/.NET，并在成功或失败后清理替换临时文件。
+- 选择性恢复不再把缺失的外观键写成空白行，带注释表头和引号键的配置可精确往返。
+- 允许 `[desktop]` 后存在与外观键无关的合法子表，例如 Codex 的 `desktop.open-in-target-preferences`；与受管外观键冲突的子表仍会安全拒绝。
+- 托盘右键菜单允许从空的 `ToolStripItemCollection` 开始重建，避免首次打开菜单时抛出参数绑定异常。
+
 ## 1.2.0 — 2026-07-17
 
 ### 新增

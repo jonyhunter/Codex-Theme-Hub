@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +10,14 @@ $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) "codex-dream-skin-t
 New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 
 try {
+  foreach ($powerShellSource in Get-ChildItem -Recurse -LiteralPath $Root -Filter '*.ps1') {
+    $sourceBytes = [System.IO.File]::ReadAllBytes($powerShellSource.FullName)
+    if ($sourceBytes.Length -lt 3 -or $sourceBytes[0] -ne 0xEF -or
+      $sourceBytes[1] -ne 0xBB -or $sourceBytes[2] -ne 0xBF) {
+      throw "Windows PowerShell source must use UTF-8 BOM for 5.1 compatibility: $($powerShellSource.FullName)"
+    }
+  }
+
   $configPath = Join-Path $temporaryRoot 'config.toml'
   $backupPath = Join-Path $temporaryRoot 'config.before-dream-skin.toml'
   $projectName = -join @([char]0x4EE3, [char]0x7801, [char]0x9879, [char]0x76EE, [char]0x7532)
@@ -85,6 +93,21 @@ try {
   $lfRestored = Read-DreamSkinUtf8File -Path $lfConfigPath
   if ($lfRestored.Contains("`r") -or $lfRestored -match '(?m)^\[desktop\]$' -or -not $lfRestored.Contains($projectName)) {
     throw 'Restore did not preserve LF content or remove the generated empty desktop section.'
+  }
+
+  $nestedConfigPath = Join-Path $temporaryRoot 'config-nested-desktop.toml'
+  $nestedBackupPath = Join-Path $temporaryRoot 'config-nested-desktop.before.toml'
+  $nestedOriginal = "[desktop]`r`nappearanceTheme = `"light`"`r`n`r`n[desktop.open-in-target-preferences]`r`nterminal = `"default`"`r`n`r`n[desktop.open-in-target-preferences.perPath]`r`n'c:\workspace' = `"terminal`"`r`n"
+  [System.IO.File]::WriteAllText($nestedConfigPath, $nestedOriginal, $utf8NoBom)
+  Install-DreamSkinBaseTheme -ConfigPath $nestedConfigPath -BackupPath $nestedBackupPath
+  $nestedInstalled = Read-DreamSkinUtf8File -Path $nestedConfigPath
+  if ($nestedInstalled -notmatch '(?m)^\[desktop\.open-in-target-preferences\]\r?$' -or
+    $nestedInstalled -notmatch '(?m)^\[desktop\.open-in-target-preferences\.perPath\]\r?$') {
+    throw 'Install rejected or changed unrelated nested desktop tables.'
+  }
+  Restore-DreamSkinBaseTheme -ConfigPath $nestedConfigPath -BackupPath $nestedBackupPath
+  if ((Read-DreamSkinUtf8File -Path $nestedConfigPath) -cne $nestedOriginal) {
+    throw 'Nested desktop tables did not survive the install/restore round trip exactly.'
   }
 
   $quotedConfigPath = Join-Path $temporaryRoot 'config-quoted.toml'
@@ -453,6 +476,9 @@ try {
   if (-not $traySource.Contains('$nextPaused') -or -not $traySource.Contains('[System.Windows.Forms.Application]::Exit()')) {
     throw 'Tray pause/restore closures do not terminate cleanly.'
   }
+  if (-not $traySource.Contains('[AllowEmptyCollection()]')) {
+    throw 'Tray menu items reject the empty collection used at the start of menu rebuilding.'
+  }
   if (-not $traySource.Contains('Read-DreamSkinTheme -ThemeDirectory $paths.Active -SkipImageMetadata') -or
     -not $traySource.Contains('Get-DreamSkinSavedThemes -StateRoot $StateRoot -SkipImageMetadata')) {
     throw 'Tray menu metadata enumeration still performs full image parsing on every open.'
@@ -519,8 +545,17 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Injector self-test failed.' }
   & $node.Path (Join-Path $Root 'scripts\injector.mjs') --check-payload --theme-dir $themePaths.Active *> $null
   if ($LASTEXITCODE -ne 0) { throw 'Managed theme payload validation failed.' }
-  & $node.Path (Join-Path $Root 'scripts\injector.mjs') --check-payload --theme-dir $oversizedTheme *> $null
-  if ($LASTEXITCODE -eq 0) { throw 'Node injector accepted an image over the 16 MB limit.' }
+  $savedErrorActionPreference = $ErrorActionPreference
+  try {
+    # Windows PowerShell 5.1 promotes native stderr to ErrorRecord objects.
+    # This command is expected to fail, so capture only its process exit code.
+    $ErrorActionPreference = 'Continue'
+    & $node.Path (Join-Path $Root 'scripts\injector.mjs') --check-payload --theme-dir $oversizedTheme *> $null
+    $oversizedPayloadExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $savedErrorActionPreference
+  }
+  if ($oversizedPayloadExitCode -eq 0) { throw 'Node injector accepted an image over the 16 MB limit.' }
   & $node.Path (Join-Path $PSScriptRoot 'renderer-inject.test.mjs')
   if ($LASTEXITCODE -ne 0) { throw 'Renderer auxiliary-window regression test failed.' }
   & $node.Path (Join-Path $PSScriptRoot 'injector-bootstrap.test.mjs')
